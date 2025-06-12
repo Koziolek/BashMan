@@ -26,9 +26,9 @@ test_should_extract_doc_comments() {
 
 
 
-#tearDown() {
-#  rm -rf docs
-#  rm -rf _target
-#}
+tearDown() {
+  rm -rf docs
+  rm -rf _target
+}
 
 . $WORKSPACE_TOOLS/shunit2/shunit2
