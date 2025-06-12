@@ -13,7 +13,8 @@ TARGET_DIR=""
 SOURCE_DIR=""
 
 # INTERNALS
-_SEGMENT_SEPARATOR=${_SEGMENT_SEPARATOR:-'#####################'}
+_SEGMENT_SEPARATOR=${_SEGMENT_SEPARATOR:-'=============================================================================='}
+_HELP=0
 
 show_help() {
   cat <<EOF
@@ -76,7 +77,6 @@ log() {
   esac
 }
 
-# Parsowanie argumentów
 parse_arguments() {
   local OPTIND opt
 
@@ -89,20 +89,21 @@ parse_arguments() {
       INSTALL_MODE=true
       ;;
     h)
+      _HELP=1
       show_help
       return 0
       ;;
     g)
-        log "INFO" "Will not gzip"
-        GZIP_MODE=false
-        ;;
+      log "INFO" "Will not gzip"
+      GZIP_MODE=false
+      ;;
     \?)
-      log "ERROR" "Nieznana opcja: -$OPTARG"
+      log "ERROR" "Unknown option: -$OPTARG"
       show_help
       return 1
       ;;
     :)
-      log "ERROR" "Opcja -$OPTARG wymaga argumentu"
+      log "ERROR" "Option -$OPTARG requires an argument"
       show_help
       return 1
       ;;
@@ -111,9 +112,8 @@ parse_arguments() {
 
   shift $((OPTIND - 1))
 
-  # Ostatni parametr to katalog źródłowy
   if [[ $# -gt 1 ]]; then
-    log "ERROR" "Zbyt wiele argumentów"
+    log "ERROR" "Too many arguments"
     show_help
     return 1
   elif [[ $# -eq 1 ]]; then
@@ -138,14 +138,14 @@ check_dependencies() {
   fi
 
   if [[ ${#missing_deps[@]} -gt 0 ]]; then
-    log "ERROR" "Brakujące zależności: ${missing_deps[*]}"
-    log "INFO" "Zainstaluj je za pomocą: sudo apt-get install ${missing_deps[*]}"
+    log "ERROR" "Missing dependencies: ${missing_deps[*]}"
+    log "INFO" "Install them using: sudo apt-get install ${missing_deps[*]}"
     return 1
   fi
 }
 check_source_directory() {
   if [[ ! -d "$SOURCE_DIR" ]]; then
-    log "ERROR" "Katalog źródłowy nie istnieje: $SOURCE_DIR"
+    log "ERROR" "Source directory does not exist: $SOURCE_DIR"
     return 1
   fi
 }
@@ -155,7 +155,6 @@ check_target_directory() {
   fi
 }
 
-# Wyciąganie komentarzy dokumentacji
 extract_doc_comments() {
   local file="$1"
   local temp_file
@@ -181,8 +180,19 @@ extract_doc_comments() {
       {
           if (in_comment) {
               line = $0;
-              sub(/^# ?/, "", line);
-              block = block line "\n";
+              if (line == "#") {
+                  line = "";
+              } else {
+                  # Usuń "# " lub "#" z początku
+                  sub(/^# ?/, "", line);
+              }
+
+              if (block == "") {
+                  block = line;
+              } else {
+                  block = block "\n" line;
+              }
+
           } else if (next_line_is_func) {
               if ($0 ~ /^(function |[a-zA-Z_])[a-zA-Z0-9_]* ?\(\)/) {
                   split($0, parts, "(");
@@ -190,7 +200,7 @@ extract_doc_comments() {
                   gsub(/^function /, "", func_name);
                   gsub(/ /, "", func_name);
                   print "function_name: " func_name;
-                  printf "comment: %s\n", (block == "" ? "# Brak dokumentacji\n" : block);
+                  printf "comment: %s\n", (block == "" ? "# Brak dokumentacji" : block);
                   print "";
                   print separator;
               }
@@ -209,39 +219,88 @@ process_file() {
   local processed_count=0
 
   basename=$(basename "$file" .sh)
-  log "INFO" "Przetwarzanie pliku: $file"
+  log "INFO" "Processing file: $file"
 
   doc_comments_file=$(extract_doc_comments "$file")
 
-  local segments
-  readarray -d "$_SEGMENT_SEPARATOR" -t segments < "$doc_comments_file"
+  local segments_content
+  segments_content=$(cat "$doc_comments_file")
 
-  for segment in "${segments[@]}"; do
-    # Pomijamy puste segmenty
-    [[ -z "$(echo "$segment" | tr -d '[:space:]')" ]] && continue
+  IFS="$_SEGMENT_SEPARATOR" read -ra segments <<<"$segments_content"
 
-    local func_name
-    func_name=$(echo "$segment" | grep "^function_name:" | sed 's/^function_name: *//')
+  local current_segment=""
+  local func_name=""
+  local comment=""
 
-    local comment
-    comment=$(echo "$segment" | sed -n '/^comment: */,$p' | sed '1s/^comment: *//')
+  while IFS= read -r line; do
+    if [[ "$line" == "$_SEGMENT_SEPARATOR" ]]; then
+      # End of segment - process it
+      if [[ -n "$current_segment" ]]; then
 
+        func_name=$(echo "$current_segment" | grep "^function_name:" | sed 's/^function_name: *//')
+        comment=$(echo "$current_segment" | sed -n '/^comment: */,$p' | sed '1s/^comment: *//')
+        comment=$(echo "$comment" | sed '/^[[:space:]]*$/d')
+
+        if [[ -n "$func_name" && -n "$comment" ]]; then
+          generate_man_page "$basename" "$func_name" "$comment"
+          ((processed_count++))
+        else
+          log "WARN" "Incomplete data in segment - func_name='$func_name', comment='$comment'"
+        fi
+      fi
+      current_segment=""
+    else
+      # Dodaj linię do bieżącego segmentu
+      if [[ -n "$current_segment" ]]; then
+        current_segment="$current_segment"$'\n'"$line"
+      else
+        current_segment="$line"
+      fi
+    fi
+  done <"$doc_comments_file"
+
+  if [[ -n "$current_segment" ]]; then
+    func_name=$(echo "$current_segment" | grep "^function_name:" | sed 's/^function_name: *//')
+    comment=$(echo "$current_segment" | sed -n '/^comment: */,$p' | sed '1s/^comment: *//')
     comment=$(echo "$comment" | sed '/^[[:space:]]*$/d')
 
     if [[ -n "$func_name" && -n "$comment" ]]; then
       generate_man_page "$basename" "$func_name" "$comment"
       ((processed_count++))
-    else
-      log "WARN" "Niepełne dane w segmencie - func_name='$func_name', comment='$comment'"
     fi
-  done
+  fi
 
   rm -f "$doc_comments_file"
 
   if [[ $processed_count -gt 0 ]]; then
-    log "INFO" "Wygenerowano dokumentację dla $processed_count funkcji z pliku $file"
+    log "INFO" "Generated documentation for $processed_count functions from file $file"
   else
-    log "WARN" "Nie znaleziono żadnych funkcji z dokumentacją w pliku $file"
+    log "WARN" "No functions with documentation found in file $file"
+  fi
+}
+
+convert_markdown_to_man() {
+  local md_file="$1"
+  local man_file="$2"
+
+  if command -v pandoc >/dev/null 2>&1; then
+    pandoc "$md_file" -s -t man -o "$man_file" 2>/dev/null
+    return $?
+  else
+    log "WARN" "Pandoc is not installed - keeping markdown file: $md_file"
+    return 1
+  fi
+}
+
+compress_man_page() {
+  local man_file="$1"
+
+  if [[ -f "$man_file" ]]; then
+    gzip -f "$man_file"
+    return $?
+  else
+    log "ERROR" "File to compress does not exist: $man_file"
+    return 1
   fi
 }
 
@@ -254,52 +313,48 @@ generate_man_page() {
   local output_dir="$target_dir/$basename"
   local md_file="$output_dir/${func_name}.md"
   local man_file="$output_dir/${func_name}.1"
-  local gz_file="$output_dir/${func_name}.1.gz"
 
   if [[ -z "$target_dir" ]]; then
-    log "ERROR" "Katalog docelowy nie został ustawiony (TARGET_DIR ani DEFAULT_TARGET_DIR)"
+    log "ERROR" "Target directory not set (neither TARGET_DIR nor DEFAULT_TARGET_DIR)"
     return 1
   fi
 
   if ! mkdir -p "$output_dir"; then
-    log "ERROR" "Nie można utworzyć katalogu: $output_dir"
+    log "ERROR" "Cannot create directory: $output_dir"
     return 1
   fi
 
-  # Przygotowanie zawartości markdown
-  {
-    echo "% ${func_name}(1) | Funkcje Bash"
-    echo "% "
-    echo "% $(date +'%B %Y')"
-    echo ""
-    echo "$doc_content"
-  } >"$md_file"
+  echo "$doc_content" >"$md_file"
+
+  echo "----"
+  echo $doc_content
+  cat $md_file
+  echo "----"
 
   if [[ ! -f "$md_file" ]]; then
-    log "ERROR" "Nie można utworzyć pliku markdown: $md_file"
+    log "ERROR" "Cannot create markdown file: $md_file"
     return 1
   fi
 
-  if command -v pandoc >/dev/null 2>&1; then
-    if pandoc -s -t man "$md_file" -o "$man_file" 2>/dev/null; then
-      # Kompresja
-      gzip -f "$man_file"
-      rm -f "$md_file"
-    else
-      log "ERROR" "Błąd konwersji pandoc dla funkcji: $func_name"
-      rm -f "$md_file" "$man_file"
-      return 1
-    fi
-  else
-    log "WARN" "Pandoc nie jest zainstalowany - pozostawiam plik markdown: $md_file"
+  if ! convert_markdown_to_man "$md_file" "$man_file"; then
+    log "ERROR" "Conversion error for function: $func_name"
+    rm -f "$md_file" "$man_file"
+    return 1
   fi
 
+  echo "----"
+  cat $man_file
+  echo "----"
+
+
+  if [[ $GZIP_MODE == true ]]; then
+    compress_man_page "$man_file"
+    rm -f "$md_file"
+  fi
 }
 
-# Znajdowanie plików bash
 find_bash_files() {
   {
-    # Pliki z rozszerzeniem .sh i .bash
     find "$SOURCE_DIR" -type f \( -name "*.sh" -o -name "*.bash" \)
 
     # Pliki wykonywalne z shebangiem bash
@@ -307,7 +362,6 @@ find_bash_files() {
   } | sort -u
 }
 
-# Instalacja w systemie
 install_system_docs() {
   local installed_count=0
 
@@ -316,44 +370,94 @@ install_system_docs() {
     return 1
   fi
 
-  log "INFO" "Instalowanie dokumentacji w /usr/share/man/man1/"
+  log "INFO" "Installing documentation in /usr/share/man/man1/"
 
   find "$TARGET_DIR" -name "*.1.gz" | while read -r gz_file; do
     local filename
     filename=$(basename "$gz_file")
     cp "$gz_file" "/usr/share/man/man1/$filename"
     ((installed_count++))
-    log "INFO" "Zainstalowano: $filename"
+    log "INFO" "Installed: $filename"
   done
 
-  # Aktualizacja bazy man
   if command -v mandb &>/dev/null; then
-    log "INFO" "Aktualizowanie bazy danych man..."
+    log "INFO" "Updating man database..."
     mandb -q
   fi
 
-  log "INFO" "Instalacja zakończona. Zainstalowano $installed_count plików."
+  log "INFO" "Installation complete. Installed $installed_count files."
 }
 
-# Główna funkcja
+#;
+# # BashMan — a documentation generator for bash functions. Prepare man pages based on coments in your code.
+#
+# ## Usage:
+#
+#   bashman [OPTIONS] [SOURCE_DIRECTORY]
+#
+# ### OPTIONS:
+#       -t, --target – DIR Target directory for documentation (default: docs)
+#       -i, --install – Install documentation in /usr/share/man/man1
+#       -h, --help – Display this help
+#
+# ### ARGUMENTS:
+#       SOURCE_DIRECTORY Directory with bash scripts (default: .)
+#
+# ### EXAMPLES:
+#   ```bash
+#       $ bashman # Generate docs from current directory to ./docs
+#       $ bashman -t /tmp/docs ./scripts # Generate docs from ./scripts to /tmp/docs
+#       $ bashman -i ./scripts # Generate and install in system
+#   ```
+# ## Comment format:
+#
+# Documentation comments must be placed directly above the function:
+#
+# ```
+#     #;
+#     # # Function name
+#     #
+#     # Function description in markdown format
+#     #
+#     # ## Parameters
+#     # - \$1: first parameter
+#     # - \$2: second parameter
+#     #
+#     # ## Example
+#     # \`\`\`bash
+#     # my_function "test" "123"
+#     # \`\`\`
+#     #;
+#     my_function() {
+#         # function code
+#     }
+# ```
+# ## Licence:
+#
+# MIT Licence
+#;
 function bashman() {
   log "INFO" "BashMan Generator - start"
 
   parse_arguments "$@"
+
+  if [[ $_HELP -eq 1 ]]; then
+    return 0
+  fi
+
   check_dependencies
   check_source_directory
   check_target_directory
 
   local total_files=0
 
-  # Przetwarzanie plików
   while IFS= read -r -d '' file; do
     process_file "$file"
     ((total_files++))
   done < <(find_bash_files | sort -u | tr '\n' '\0')
 
   if [[ $total_files -eq 0 ]]; then
-    log "WARN" "Nie znaleziono plików bash w katalogu: $SOURCE_DIR"
+    log "WARN" "No bash files found in directory: $SOURCE_DIR"
     return 0
   fi
 
@@ -365,7 +469,7 @@ function bashman() {
 
   if [[ "$INSTALL_MODE" == false ]]; then
     echo ""
-    echo "Aby zainstalować dokumentację w systemie, użyj:"
+    echo "To install documentation in the system, use:"
     echo "  sudo $0 -i $SOURCE_DIR"
   fi
 }
@@ -373,6 +477,5 @@ function bashman() {
 if [[ "${BASH_SOURCE[0]}" != "${0}" ]]; then
   export -f bashman
 else
-  echo "Running"
-  # bashman "$@"
+  bashman "$@"
 fi
