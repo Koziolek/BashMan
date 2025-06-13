@@ -5,7 +5,7 @@ source ../bashman.sh
 test_should_find_all_bash_files(){
   SOURCE_DIR=$(realpath "./_data")
   files=$(find_bash_files | wc -l)
-  assertEquals 2 $files
+  assertEquals 3 $files
 }
 
 test_should_create_target_dir() {
@@ -37,6 +37,21 @@ test_should_produce_gz_files() {
   bashman -t $TARGET_DIR $SOURCE_DIR
   assertTrue "[ -d $(realpath $TARGET_DIR/simple) ]"
   assertTrue "[ -d $(realpath $TARGET_DIR/complex) ]"
+  assertEquals 4 $(ls -1 ${TARGET_DIR}/simple/*.gz | wc -l)
+  assertEquals 1 $(ls -1 ${TARGET_DIR}/complex/*.gz | wc -l)
+}
+
+
+test_should_produce_man_files_when_g_opt() {
+  SOURCE_DIR=$(realpath "./_data")
+  TARGET_DIR="./_target/docs"
+  bashman -g -t $TARGET_DIR $SOURCE_DIR
+  assertTrue "[ -d $(realpath $TARGET_DIR/simple) ]"
+  assertTrue "[ -d $(realpath $TARGET_DIR/complex) ]"
+  assertEquals 4 $(ls -1 ${TARGET_DIR}/simple/*.1 | wc -l)
+  assertEquals 0 $(ls -1 ${TARGET_DIR}/simple/*.gz | wc -l)
+  assertEquals 1 $(ls -1 ${TARGET_DIR}/complex/*.1 | wc -l)
+  assertEquals 0 $(ls -1 ${TARGET_DIR}/complex/*.gz | wc -l)
 }
 
 tearDown() {

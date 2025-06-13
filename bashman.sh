@@ -66,17 +66,6 @@ MIT Licence
 EOF
 }
 
-log() {
-  local level="$1"
-  shift
-  case "$level" in
-  "DEBUG") echo -e "${C_BLUE}[INFO]${C_NC} $*" >&2 ;;
-  "INFO") echo -e "${C_GREEN}[INFO]${C_NC} $*" >&2 ;;
-  "WARN") echo -e "${C_YELLOW}[WARN]${C_NC} $*" >&2 ;;
-  "ERROR") echo -e "${C_RED}[ERROR]${C_NC} $*" >&2 ;;
-  esac
-}
-
 parse_arguments() {
   local OPTIND opt
 
@@ -94,16 +83,16 @@ parse_arguments() {
       return 0
       ;;
     g)
-      log "INFO" "Will not gzip"
+      log_info "Will not gzip"
       GZIP_MODE=false
       ;;
     \?)
-      log "ERROR" "Unknown option: -$OPTARG"
+      log_error "Unknown option: -$OPTARG"
       show_help
       return 1
       ;;
     :)
-      log "ERROR" "Option -$OPTARG requires an argument"
+      log_error "Option -$OPTARG requires an argument"
       show_help
       return 1
       ;;
@@ -113,7 +102,7 @@ parse_arguments() {
   shift $((OPTIND - 1))
 
   if [[ $# -gt 1 ]]; then
-    log "ERROR" "Too many arguments"
+    log_error "Too many arguments"
     show_help
     return 1
   elif [[ $# -eq 1 ]]; then
@@ -138,14 +127,14 @@ check_dependencies() {
   fi
 
   if [[ ${#missing_deps[@]} -gt 0 ]]; then
-    log "ERROR" "Missing dependencies: ${missing_deps[*]}"
-    log "INFO" "Install them using: sudo apt-get install ${missing_deps[*]}"
+    log_error "Missing dependencies: ${missing_deps[*]}"
+    log_info "Install them using: sudo apt-get install ${missing_deps[*]}"
     return 1
   fi
 }
 check_source_directory() {
   if [[ ! -d "$SOURCE_DIR" ]]; then
-    log "ERROR" "Source directory does not exist: $SOURCE_DIR"
+    log_error "Source directory does not exist: $SOURCE_DIR"
     return 1
   fi
 }
@@ -219,7 +208,7 @@ process_file() {
   local processed_count=0
 
   basename=$(basename "$file" .sh)
-  log "INFO" "Processing file: $file"
+  log_info "Processing file: $file"
 
   doc_comments_file=$(extract_doc_comments "$file")
 
@@ -239,13 +228,12 @@ process_file() {
 
         func_name=$(echo "$current_segment" | grep "^function_name:" | sed 's/^function_name: *//')
         comment=$(echo "$current_segment" | sed -n '/^comment: */,$p' | sed '1s/^comment: *//')
-        comment=$(echo "$comment" | sed '/^[[:space:]]*$/d')
 
         if [[ -n "$func_name" && -n "$comment" ]]; then
           generate_man_page "$basename" "$func_name" "$comment"
           ((processed_count++))
         else
-          log "WARN" "Incomplete data in segment - func_name='$func_name', comment='$comment'"
+          log_warn "Incomplete data in segment - func_name='$func_name', comment='$comment'"
         fi
       fi
       current_segment=""
@@ -262,7 +250,6 @@ process_file() {
   if [[ -n "$current_segment" ]]; then
     func_name=$(echo "$current_segment" | grep "^function_name:" | sed 's/^function_name: *//')
     comment=$(echo "$current_segment" | sed -n '/^comment: */,$p' | sed '1s/^comment: *//')
-    comment=$(echo "$comment" | sed '/^[[:space:]]*$/d')
 
     if [[ -n "$func_name" && -n "$comment" ]]; then
       generate_man_page "$basename" "$func_name" "$comment"
@@ -273,9 +260,9 @@ process_file() {
   rm -f "$doc_comments_file"
 
   if [[ $processed_count -gt 0 ]]; then
-    log "INFO" "Generated documentation for $processed_count functions from file $file"
+    log_info "Generated documentation for $processed_count functions from file $file"
   else
-    log "WARN" "No functions with documentation found in file $file"
+    log_warn "No functions with documentation found in file $file"
   fi
 }
 
@@ -287,7 +274,7 @@ convert_markdown_to_man() {
     pandoc "$md_file" -s -t man -o "$man_file" 2>/dev/null
     return $?
   else
-    log "WARN" "Pandoc is not installed - keeping markdown file: $md_file"
+    log_warn "Pandoc is not installed - keeping markdown file: $md_file"
     return 1
   fi
 }
@@ -299,7 +286,7 @@ compress_man_page() {
     gzip -f "$man_file"
     return $?
   else
-    log "ERROR" "File to compress does not exist: $man_file"
+    log_error "File to compress does not exist: $man_file"
     return 1
   fi
 }
@@ -315,38 +302,26 @@ generate_man_page() {
   local man_file="$output_dir/${func_name}.1"
 
   if [[ -z "$target_dir" ]]; then
-    log "ERROR" "Target directory not set (neither TARGET_DIR nor DEFAULT_TARGET_DIR)"
+    log_error "Target directory not set (neither TARGET_DIR nor DEFAULT_TARGET_DIR)"
     return 1
   fi
 
   if ! mkdir -p "$output_dir"; then
-    log "ERROR" "Cannot create directory: $output_dir"
+    log_error "Cannot create directory: $output_dir"
     return 1
   fi
 
   echo "$doc_content" >"$md_file"
-
-  echo "----"
-  echo $doc_content
-  cat $md_file
-  echo "----"
-
   if [[ ! -f "$md_file" ]]; then
-    log "ERROR" "Cannot create markdown file: $md_file"
+    log_error "Cannot create markdown file: $md_file"
     return 1
   fi
 
   if ! convert_markdown_to_man "$md_file" "$man_file"; then
-    log "ERROR" "Conversion error for function: $func_name"
+    log_error "Conversion error for function: $func_name"
     rm -f "$md_file" "$man_file"
     return 1
   fi
-
-  echo "----"
-  cat $man_file
-  echo "----"
-
-
   if [[ $GZIP_MODE == true ]]; then
     compress_man_page "$man_file"
     rm -f "$md_file"
@@ -356,8 +331,6 @@ generate_man_page() {
 find_bash_files() {
   {
     find "$SOURCE_DIR" -type f \( -name "*.sh" -o -name "*.bash" \)
-
-    # Pliki wykonywalne z shebangiem bash
     find "$SOURCE_DIR" -type f -executable -exec grep -l "^#!/bin/bash\|^#!/usr/bin/env bash" {} \;
   } | sort -u
 }
@@ -366,26 +339,26 @@ install_system_docs() {
   local installed_count=0
 
   if [[ $EUID -ne 0 ]]; then
-    log "ERROR" "Instalacja wymaga uprawnień root. Użyj sudo."
+    log_error "Installation requires root privileges. Use sudo."
     return 1
   fi
 
-  log "INFO" "Installing documentation in /usr/share/man/man1/"
+  log_info "Installing documentation in /usr/share/man/man1/"
 
   find "$TARGET_DIR" -name "*.1.gz" | while read -r gz_file; do
     local filename
     filename=$(basename "$gz_file")
     cp "$gz_file" "/usr/share/man/man1/$filename"
     ((installed_count++))
-    log "INFO" "Installed: $filename"
+    log_info "Installed: $filename"
   done
 
   if command -v mandb &>/dev/null; then
-    log "INFO" "Updating man database..."
+    log_info "Updating man database..."
     mandb -q
   fi
 
-  log "INFO" "Installation complete. Installed $installed_count files."
+  log_info "Installation complete. Installed $installed_count files."
 }
 
 #;
@@ -437,7 +410,7 @@ install_system_docs() {
 # MIT Licence
 #;
 function bashman() {
-  log "INFO" "BashMan Generator - start"
+  log_info "BashMan Generator - start"
 
   parse_arguments "$@"
 
@@ -457,11 +430,11 @@ function bashman() {
   done < <(find_bash_files | sort -u | tr '\n' '\0')
 
   if [[ $total_files -eq 0 ]]; then
-    log "WARN" "No bash files found in directory: $SOURCE_DIR"
+    log_warn "No bash files found in directory: $SOURCE_DIR"
     return 0
   fi
 
-  log "INFO" "Przetworzono $total_files plików"
+  log_info "Processed $total_files files"
 
   if [[ "$INSTALL_MODE" == true ]]; then
     install_system_docs
